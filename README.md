@@ -1,18 +1,16 @@
 
-# 🤖 Deriv Over 3 Bot (Dinâmico)
+# 🤖 Deriv Over 3 Bot (Avançado)
 
-Este robô opera na Deriv analisando os últimos 8 dígitos do ativo R_100, entrando em "OVER 3" com base em um número mínimo de dígitos menores que 4, configurável via interface Streamlit.
+Este robô opera na Deriv com base na estratégia Over 3 e conta com controle total:
+
+- Entrada baseada nos últimos 8 dígitos
+- Controle de take profit e stop loss
+- Multiplicador configurável após 2 perdas
+- Interface via Streamlit
 
 ## Como usar
-1. Insira seu token da Deriv
-2. Defina o valor da entrada (ex: 1.00)
-3. Escolha quantos dígitos < 4 devem acionar a entrada
-4. Clique em "Iniciar Robô"
+1. Suba este projeto no GitHub
+2. Conecte no Streamlit Cloud (https://streamlit.io/cloud)
+3. Defina os parâmetros e inicie o robô
 
-## Estratégia
-- Se o número de dígitos menores que 4 for igual ou maior que o escolhido, entra em OVER 3 com 1 tick
-- Após LOSS, multiplica stake por 1.68
-- Após WIN, reseta o valor original
-- Após 2 perdas, espera um tempo aleatório (6–487s)
-
-Recomendado testar em conta virtual primeiro.
+Recomenda-se uso em conta virtual para testes.

@@ -4,7 +4,7 @@ import websockets
 import json
 import random
 
-async def start_bot(token, stake, threshold):
+async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicador):
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
     async with websockets.connect(uri) as ws:
         await ws.send(json.dumps({"authorize": token}))
@@ -22,10 +22,20 @@ async def start_bot(token, stake, threshold):
         }))
 
         digits = []
-        loss_count = 0
+        loss_streak = 0
         current_stake = stake
+        total_profit = 0
+        win_count = 0
+        loss_count = 0
 
         while True:
+            if total_profit >= take_profit:
+                yield "🏁 Meta Atingida", f"Lucro total ${total_profit:.2f} ≥ Meta ${take_profit:.2f}"
+                break
+            if abs(total_profit) >= stop_loss:
+                yield "🛑 Stop Loss Atingido", f"Perda total ${total_profit:.2f} ≥ Limite ${stop_loss:.2f}"
+                break
+
             try:
                 msg = json.loads(await ws.recv())
             except websockets.exceptions.ConnectionClosed:
@@ -74,20 +84,25 @@ async def start_bot(token, stake, threshold):
                                 if result_msg.get("contract") and result_msg["contract"].get("contract_id") == contract_id:
                                     status = result_msg["contract"]["status"]
                                     profit = result_msg["contract"].get("profit", 0)
+                                    total_profit += profit
+
                                     if status == "won":
-                                        yield "🏆 WIN", f"Lucro de ${profit:.2f}. Contrato #{contract_id}"
+                                        win_count += 1
+                                        loss_streak = 0
                                         current_stake = stake
-                                        loss_count = 0
+                                        yield "🏆 WIN", f"Lucro ${profit:.2f} | Total: ${total_profit:.2f}"
                                     elif status == "lost":
-                                        yield "💥 LOSS", f"Prejuízo de ${profit:.2f}. Contrato #{contract_id}"
-                                        current_stake *= 1.68
                                         loss_count += 1
+                                        loss_streak += 1
+                                        yield "💥 LOSS", f"Prejuízo ${profit:.2f} | Total: ${total_profit:.2f}"
+                                        if loss_streak >= 2:
+                                            current_stake *= multiplicador
+                                            yield "🔁 Multiplicador aplicado", f"Nova stake: R${current_stake:.2f}"
                                     break
 
                             digits.clear()
 
-                            if loss_count >= 2:
+                            if loss_streak >= 2:
                                 wait = random.randint(6, 487)
-                                yield "🕒 Espera aleatória", f"Aguardando {wait} segundos após 2 perdas..."
+                                yield "🕒 Esperando", f"{wait} segundos após 2 perdas seguidas..."
                                 await asyncio.sleep(wait)
-                                loss_count = 0
