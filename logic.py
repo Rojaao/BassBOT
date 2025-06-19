@@ -3,27 +3,40 @@ import websockets
 import json
 import random
 
+async def receiver(ws, queue):
+    """Escuta mensagens e coloca na fila."""
+    while True:
+        try:
+            msg = await ws.recv()
+            await queue.put(json.loads(msg))
+        except websockets.ConnectionClosed:
+            break
+
 async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicador):
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
     async with websockets.connect(uri) as ws:
         await ws.send(json.dumps({"authorize": token}))
         auth_response = json.loads(await ws.recv())
+
         if auth_response.get("error"):
             yield "❌ Erro de Autorização", "Token inválido ou sem permissão de negociação."
             return
         yield "✅ Conectado com sucesso", "Autenticado na conta Deriv."
 
-        # Assinar ticks
+        # Inscrever ticks
         await ws.send(json.dumps({"ticks": "R_100", "subscribe": 1}))
+
+        queue = asyncio.Queue()
+        recv_task = asyncio.create_task(receiver(ws, queue))
 
         digits = []
         total_profit = 0
-        loss_streak = 0
         current_stake = stake
-        threshold_reached = False
-        contract_id = None
+        loss_streak = 0
         contract_active = False
+        contract_id = None
+        threshold_reached = False
 
         while True:
             if total_profit >= take_profit:
@@ -33,16 +46,14 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                 yield "🛑 Stop Loss Atingido", f"Perda total ${total_profit:.2f} ≥ Limite ${stop_loss:.2f}"
                 break
 
-            msg = json.loads(await ws.recv())
+            msg = await queue.get()
 
-            # Recebe tick
             if "tick" in msg and not contract_active:
                 quote = msg["tick"]["quote"]
                 digit = int(str(quote)[-1])
                 digits.append(digit)
                 if len(digits) > 8:
                     digits.pop(0)
-
                 yield "📥 Tick recebido", f"Dígito: {digit} | Buffer: {digits}"
 
                 if len(digits) == 8:
@@ -54,7 +65,6 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                     else:
                         threshold_reached = False
 
-            # Se chegou sinal e não tem contrato ativo, envia ordem
             if threshold_reached and not contract_active:
                 yield "📈 Sinal Confirmado", f"Enviando ordem no OVER 3 com R${current_stake:.2f}"
 
@@ -73,7 +83,7 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                     }
                 }))
 
-                buy_response = json.loads(await ws.recv())
+                buy_response = await queue.get()
                 if "buy" not in buy_response:
                     yield "❌ Erro ao comprar", str(buy_response)
                     threshold_reached = False
@@ -86,7 +96,6 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                 digits.clear()
                 yield "✅ Ordem Enviada", f"Contrato #{contract_id} iniciado."
 
-            # Se contrato ativo, verificar se msg é status do contrato
             if contract_active and "contract" in msg:
                 c = msg["contract"]
                 if c.get("contract_id") == contract_id:
