@@ -1,8 +1,14 @@
-
 import asyncio
 import websockets
 import json
 import random
+import streamlit as st
+
+async def aguardar_resultado(ws, contract_id):
+    while True:
+        result_msg = json.loads(await ws.recv())
+        if result_msg.get("contract") and result_msg["contract"].get("contract_id") == contract_id:
+            return result_msg["contract"]
 
 async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicador):
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
@@ -79,26 +85,23 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                             contract_id = buy_response["buy"]["contract_id"]
                             yield "✅ Compra enviada", f"Contrato #{contract_id} iniciado."
 
-                            while True:
-                                result_msg = json.loads(await ws.recv())
-                                if result_msg.get("contract") and result_msg["contract"].get("contract_id") == contract_id:
-                                    status = result_msg["contract"]["status"]
-                                    profit = result_msg["contract"].get("profit", 0)
-                                    total_profit += profit
+                            contract = await aguardar_resultado(ws, contract_id)
+                            status = contract["status"]
+                            profit = contract.get("profit", 0)
+                            total_profit += profit
 
-                                    if status == "won":
-                                        win_count += 1
-                                        loss_streak = 0
-                                        current_stake = stake
-                                        yield "🏆 WIN", f"Lucro ${profit:.2f} | Total: ${total_profit:.2f}"
-                                    elif status == "lost":
-                                        loss_count += 1
-                                        loss_streak += 1
-                                        yield "💥 LOSS", f"Prejuízo ${profit:.2f} | Total: ${total_profit:.2f}"
-                                        if loss_streak >= 2:
-                                            current_stake *= multiplicador
-                                            yield "🔁 Multiplicador aplicado", f"Nova stake: R${current_stake:.2f}"
-                                    break
+                            if status == "won":
+                                win_count += 1
+                                loss_streak = 0
+                                current_stake = stake
+                                yield "🏆 WIN", f"Lucro ${profit:.2f} | Total: ${total_profit:.2f}"
+                            elif status == "lost":
+                                loss_count += 1
+                                loss_streak += 1
+                                yield "💥 LOSS", f"Prejuízo ${profit:.2f} | Total: ${total_profit:.2f}"
+                                if loss_streak >= 2:
+                                    current_stake *= multiplicador
+                                    yield "🔁 Multiplicador aplicado", f"Nova stake: R${current_stake:.2f}"
 
                             digits.clear()
 
@@ -106,3 +109,28 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                                 wait = random.randint(6, 487)
                                 yield "🕒 Esperando", f"{wait} segundos após 2 perdas seguidas..."
                                 await asyncio.sleep(wait)
+
+# ------------------------- STREAMLIT INTERFACE -------------------------
+
+st.set_page_config(page_title="Robô Deriv | Últimos Dígitos", layout="centered")
+st.title("🤖 Robô Deriv com Estratégia de Dígitos")
+
+with st.form("formulario"):
+    token = st.text_input("🔑 Token da API Deriv", type="password")
+    stake = st.number_input("💰 Stake Inicial (USD)", min_value=0.35, value=1.00, step=0.10)
+    threshold = st.number_input("🎯 Mínimo de dígitos < 4", min_value=1, max_value=8, value=6)
+    take_profit = st.number_input("✅ Take Profit (lucro alvo em USD)", value=5.00, step=0.50)
+    stop_loss = st.number_input("🛑 Stop Loss (limite de perda em USD)", value=5.00, step=0.50)
+    multiplicador = st.number_input("🌀 Fator Martingale", min_value=1.0, value=2.0, step=0.1)
+
+    iniciar = st.form_submit_button("🚀 Iniciar Robô")
+
+if iniciar:
+    st.success("Robô iniciado. Aguardando sinais...")
+    output_area = st.empty()
+
+    async def run_bot():
+        async for status, msg in start_bot(token, stake, threshold, take_profit, stop_loss, multiplicador):
+            output_area.markdown(f"**{status}**\n\n{msg}")
+
+    asyncio.run(run_bot())
