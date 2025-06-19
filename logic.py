@@ -38,6 +38,7 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
         contract_id = None
 
         while True:
+            # Verifica se bateu limites para parar
             if total_profit >= take_profit:
                 yield "🏁 Meta Atingida", f"Lucro total ${total_profit:.2f} ≥ Meta ${take_profit:.2f}"
                 break
@@ -47,21 +48,23 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
 
             msg = await queue.get()
 
-            # Processar tick se não houver contrato ativo
+            # Processa ticks só se não estiver em contrato
             if "tick" in msg and not contract_active:
                 quote = msg["tick"]["quote"]
                 digit = int(str(quote)[-1])
                 digits.append(digit)
                 if len(digits) > 8:
                     digits.pop(0)
+
                 yield "📥 Tick recebido", f"Dígito: {digit} | Buffer: {digits}"
 
+                # Quando tiver 8 dígitos, analisa se há sinal
                 if len(digits) == 8:
                     count_under_4 = sum(1 for d in digits if d < 4)
                     yield "📊 Analisando", f"{count_under_4} dos últimos 8 dígitos estão abaixo de 4"
 
                     if count_under_4 >= threshold:
-                        # Enviar ordem
+                        # Envia ordem
                         yield "📈 Sinal Confirmado", f"Enviando ordem no OVER 3 com R${current_stake:.2f}"
 
                         await ws.send(json.dumps({
@@ -79,17 +82,17 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                             }
                         }))
 
-                        # Esperar resposta da compra
+                        # Espera resposta da compra
                         while True:
                             buy_msg = await queue.get()
                             if "buy" in buy_msg:
                                 contract_id = buy_msg["buy"]["contract_id"]
                                 contract_active = True
-                                digits.clear()
+                                digits.clear()  # LIMPA o buffer para novo ciclo após resultado
                                 yield "✅ Ordem Enviada", f"Contrato #{contract_id} iniciado."
                                 break
 
-            # Processar resultado do contrato
+            # Processa resultado do contrato
             if contract_active and "contract" in msg:
                 contract = msg["contract"]
                 if contract.get("contract_id") == contract_id:
@@ -101,7 +104,7 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                         yield "🏆 WIN", f"Lucro ${profit:.2f} | Total: ${total_profit:.2f}"
                         current_stake = stake
                         loss_streak = 0
-                        contract_active = False
+                        contract_active = False  # RESET para voltar a analisar ticks
                     elif status == "lost":
                         yield "💥 LOSS", f"Prejuízo ${profit:.2f} | Total: ${total_profit:.2f}"
                         loss_streak += 1
@@ -110,4 +113,4 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                             wait_time = random.randint(6, 487)
                             yield "🕒 Esperando", f"{wait_time}s após 2 perdas seguidas..."
                             await asyncio.sleep(wait_time)
-                        contract_active = False
+                        contract_active = False  # RESET para voltar a analisar ticks
