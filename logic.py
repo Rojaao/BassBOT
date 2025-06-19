@@ -3,70 +3,55 @@ import websockets
 import json
 import random
 
-async def ws_receiver(ws, queue):
-    """Recebe mensagens da Deriv e coloca na fila."""
-    try:
-        while True:
-            msg = await ws.recv()
-            await queue.put(json.loads(msg))
-    except websockets.ConnectionClosed:
-        pass
-
 async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicador):
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
-
     async with websockets.connect(uri) as ws:
+        # Autenticação
         await ws.send(json.dumps({"authorize": token}))
-        auth_response = json.loads(await ws.recv())
-
-        if auth_response.get("error"):
-            yield "❌ Erro de Autorização", "Token inválido ou sem permissão de negociação."
+        auth = json.loads(await ws.recv())
+        if auth.get("error"):
+            yield "❌ Erro de autenticação", "Token inválido."
             return
-        yield "✅ Conectado com sucesso", "Autenticado na conta Deriv."
+        yield "✅ Autenticado", "Conexão estabelecida com Deriv."
 
-        # Assinar ticks
+        # Assina ticks
         await ws.send(json.dumps({"ticks": "R_100", "subscribe": 1}))
-
-        queue = asyncio.Queue()
-        receiver_task = asyncio.create_task(ws_receiver(ws, queue))
 
         digits = []
         total_profit = 0
-        loss_streak = 0
         current_stake = stake
+        loss_streak = 0
+
         contract_active = False
         contract_id = None
+        waiting_buy_response = False
 
         while True:
-            # Verifica se bateu limites para parar
             if total_profit >= take_profit:
-                yield "🏁 Meta Atingida", f"Lucro total ${total_profit:.2f} ≥ Meta ${take_profit:.2f}"
+                yield "🏁 Meta de lucro atingida", f"Lucro total: ${total_profit:.2f}"
                 break
             if abs(total_profit) >= stop_loss:
-                yield "🛑 Stop Loss Atingido", f"Perda total ${total_profit:.2f} ≥ Limite ${stop_loss:.2f}"
+                yield "🛑 Stop loss atingido", f"Perda total: ${total_profit:.2f}"
                 break
 
-            msg = await queue.get()
+            msg = json.loads(await ws.recv())
 
-            # Processa ticks só se não estiver em contrato
-            if "tick" in msg and not contract_active:
+            # Recebe ticks e acumula
+            if "tick" in msg and not contract_active and not waiting_buy_response:
                 quote = msg["tick"]["quote"]
                 digit = int(str(quote)[-1])
                 digits.append(digit)
                 if len(digits) > 8:
                     digits.pop(0)
-
                 yield "📥 Tick recebido", f"Dígito: {digit} | Buffer: {digits}"
 
-                # Quando tiver 8 dígitos, analisa se há sinal
                 if len(digits) == 8:
                     count_under_4 = sum(1 for d in digits if d < 4)
-                    yield "📊 Analisando", f"{count_under_4} dos últimos 8 dígitos estão abaixo de 4"
+                    yield "📊 Analisando", f"{count_under_4} dos 8 últimos dígitos < 4"
 
                     if count_under_4 >= threshold:
                         # Envia ordem
-                        yield "📈 Sinal Confirmado", f"Enviando ordem no OVER 3 com R${current_stake:.2f}"
-
+                        yield "📈 Enviando ordem", f"Stake: R${current_stake:.2f} OVER 3"
                         await ws.send(json.dumps({
                             "buy": 1,
                             "price": current_stake,
@@ -81,18 +66,17 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                                 "symbol": "R_100"
                             }
                         }))
+                        waiting_buy_response = True
+                        digits.clear()  # Limpa buffer após ordem
 
-                        # Espera resposta da compra
-                        while True:
-                            buy_msg = await queue.get()
-                            if "buy" in buy_msg:
-                                contract_id = buy_msg["buy"]["contract_id"]
-                                contract_active = True
-                                digits.clear()  # LIMPA o buffer para novo ciclo após resultado
-                                yield "✅ Ordem Enviada", f"Contrato #{contract_id} iniciado."
-                                break
+            # Espera resposta da compra
+            if waiting_buy_response and "buy" in msg:
+                contract_id = msg["buy"]["contract_id"]
+                contract_active = True
+                waiting_buy_response = False
+                yield "✅ Ordem aceita", f"Contrato #{contract_id} iniciado."
 
-            # Processa resultado do contrato
+            # Acompanha contrato ativo e resultado
             if contract_active and "contract" in msg:
                 contract = msg["contract"]
                 if contract.get("contract_id") == contract_id:
@@ -101,16 +85,16 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                     total_profit += profit
 
                     if status == "won":
-                        yield "🏆 WIN", f"Lucro ${profit:.2f} | Total: ${total_profit:.2f}"
+                        yield "🏆 WIN", f"Lucro: ${profit:.2f} | Total: ${total_profit:.2f}"
+                        contract_active = False
                         current_stake = stake
                         loss_streak = 0
-                        contract_active = False  # RESET para voltar a analisar ticks
                     elif status == "lost":
-                        yield "💥 LOSS", f"Prejuízo ${profit:.2f} | Total: ${total_profit:.2f}"
+                        yield "💥 LOSS", f"Prejuízo: ${profit:.2f} | Total: ${total_profit:.2f}"
                         loss_streak += 1
+                        contract_active = False
                         if loss_streak >= 2:
                             current_stake *= multiplicador
                             wait_time = random.randint(6, 487)
-                            yield "🕒 Esperando", f"{wait_time}s após 2 perdas seguidas..."
+                            yield "⏳ Esperando", f"{wait_time}s após 2 perdas seguidas..."
                             await asyncio.sleep(wait_time)
-                        contract_active = False  # RESET para voltar a analisar ticks
