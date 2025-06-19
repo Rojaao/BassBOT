@@ -3,6 +3,16 @@ import websockets
 import json
 import random
 
+async def track_contract(ws, contract_id):
+    """Escuta o resultado do contrato e retorna status e lucro/prejuízo"""
+    while True:
+        msg = json.loads(await ws.recv())
+        contract = msg.get("contract", {})
+        if contract.get("contract_id") == contract_id:
+            status = contract.get("status")
+            profit = contract.get("profit", 0)
+            return status, profit
+
 async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicador):
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
     async with websockets.connect(uri) as ws:
@@ -21,11 +31,9 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
         }))
 
         digits = []
-        loss_streak = 0
-        current_stake = stake
         total_profit = 0
-        analyzing = True
-        contract_active = False
+        current_stake = stake
+        loss_streak = 0
 
         while True:
             if total_profit >= take_profit:
@@ -35,11 +43,7 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                 yield "🛑 Stop Loss Atingido", f"Perda total ${total_profit:.2f} ≥ Limite ${stop_loss:.2f}"
                 break
 
-            try:
-                msg = json.loads(await ws.recv())
-            except websockets.exceptions.ConnectionClosed:
-                yield "🔌 Conexão fechada", "Tentando reconectar..."
-                break
+            msg = json.loads(await ws.recv())
 
             if "tick" in msg:
                 quote = msg["tick"]["quote"]
@@ -48,16 +52,14 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                 if len(digits) > 8:
                     digits.pop(0)
 
-                yield "📥 Tick recebido", f"Preço: {quote} | Último dígito: {digit}"
+                yield "📥 Tick recebido", f"Dígito: {digit} | Buffer: {digits}"
 
-                if analyzing and not contract_active and len(digits) == 8:
+                if len(digits) == 8:
                     count_under_4 = sum(1 for d in digits if d < 4)
-                    yield "📊 Analisando", f"Dígitos: {digits} | < 4: {count_under_4}"
+                    yield "📊 Analisando", f"{count_under_4} dos últimos 8 dígitos estão abaixo de 4"
 
                     if count_under_4 >= threshold:
-                        analyzing = False
-                        contract_active = True
-                        yield "📈 Sinal Detectado", f"{count_under_4} dígitos < 4. Enviando ordem de R${current_stake:.2f}..."
+                        yield "📈 Sinal Confirmado", f"Enviando ordem no OVER 3 com R${current_stake:.2f}"
 
                         await ws.send(json.dumps({
                             "buy": 1,
@@ -75,36 +77,28 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                         }))
 
                         buy_response = json.loads(await ws.recv())
-                        if "buy" in buy_response:
-                            contract_id = buy_response["buy"]["contract_id"]
-                            yield "✅ Compra enviada", f"Contrato #{contract_id} iniciado."
+                        if "buy" not in buy_response:
+                            yield "❌ Erro ao comprar", str(buy_response)
+                            continue
 
-                            while True:
-                                result_msg = json.loads(await ws.recv())
-                                if result_msg.get("contract") and result_msg["contract"].get("contract_id") == contract_id:
-                                    status = result_msg["contract"]["status"]
-                                    profit = result_msg["contract"].get("profit", 0)
-                                    total_profit += profit
+                        contract_id = buy_response["buy"]["contract_id"]
+                        yield "✅ Ordem Enviada", f"Contrato #{contract_id} iniciado."
 
-                                    if status == "won":
-                                        yield "🏆 WIN", f"Lucro ${profit:.2f} | Total: ${total_profit:.2f}"
-                                        current_stake = stake
-                                        loss_streak = 0
-                                    elif status == "lost":
-                                        yield "💥 LOSS", f"Prejuízo ${profit:.2f} | Total: ${total_profit:.2f}"
-                                        loss_streak += 1
-                                        if loss_streak >= 2:
-                                            current_stake *= multiplicador
-                                            yield "🔁 Multiplicador aplicado", f"Nova stake: R${current_stake:.2f}"
+                        # Acompanhar resultado em tarefa paralela (não bloqueia escuta de ticks)
+                        status, profit = await track_contract(ws, contract_id)
 
-                                    break
-
-                            digits.clear()
-                            contract_active = False
-
+                        total_profit += profit
+                        if status == "won":
+                            yield "🏆 WIN", f"Lucro ${profit:.2f} | Total: ${total_profit:.2f}"
+                            current_stake = stake
+                            loss_streak = 0
+                        elif status == "lost":
+                            yield "💥 LOSS", f"Prejuízo ${profit:.2f} | Total: ${total_profit:.2f}"
+                            loss_streak += 1
                             if loss_streak >= 2:
-                                wait = random.randint(6, 487)
-                                yield "🕒 Esperando", f"Aguardando {wait}s após 2 perdas seguidas..."
-                                await asyncio.sleep(wait)
+                                current_stake *= multiplicador
+                                wait_time = random.randint(6, 487)
+                                yield "🕒 Esperando", f"{wait_time}s após 2 perdas seguidas..."
+                                await asyncio.sleep(wait_time)
 
-                            analyzing = True  # volta a analisar ticks
+                        digits.clear()
