@@ -3,14 +3,14 @@ import websockets
 import json
 import random
 
-async def receiver(ws, queue):
-    """Escuta mensagens e coloca na fila."""
-    while True:
-        try:
+async def ws_receiver(ws, queue):
+    """Recebe mensagens da Deriv e coloca na fila."""
+    try:
+        while True:
             msg = await ws.recv()
             await queue.put(json.loads(msg))
-        except websockets.ConnectionClosed:
-            break
+    except websockets.ConnectionClosed:
+        pass
 
 async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicador):
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
@@ -24,19 +24,18 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
             return
         yield "✅ Conectado com sucesso", "Autenticado na conta Deriv."
 
-        # Inscrever ticks
+        # Assinar ticks
         await ws.send(json.dumps({"ticks": "R_100", "subscribe": 1}))
 
         queue = asyncio.Queue()
-        recv_task = asyncio.create_task(receiver(ws, queue))
+        receiver_task = asyncio.create_task(ws_receiver(ws, queue))
 
         digits = []
         total_profit = 0
-        current_stake = stake
         loss_streak = 0
+        current_stake = stake
         contract_active = False
         contract_id = None
-        threshold_reached = False
 
         while True:
             if total_profit >= take_profit:
@@ -48,6 +47,7 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
 
             msg = await queue.get()
 
+            # Processar tick se não houver contrato ativo
             if "tick" in msg and not contract_active:
                 quote = msg["tick"]["quote"]
                 digit = int(str(quote)[-1])
@@ -61,46 +61,40 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                     yield "📊 Analisando", f"{count_under_4} dos últimos 8 dígitos estão abaixo de 4"
 
                     if count_under_4 >= threshold:
-                        threshold_reached = True
-                    else:
-                        threshold_reached = False
+                        # Enviar ordem
+                        yield "📈 Sinal Confirmado", f"Enviando ordem no OVER 3 com R${current_stake:.2f}"
 
-            if threshold_reached and not contract_active:
-                yield "📈 Sinal Confirmado", f"Enviando ordem no OVER 3 com R${current_stake:.2f}"
+                        await ws.send(json.dumps({
+                            "buy": 1,
+                            "price": current_stake,
+                            "parameters": {
+                                "amount": current_stake,
+                                "basis": "stake",
+                                "contract_type": "DIGITOVER",
+                                "barrier": "3",
+                                "currency": "USD",
+                                "duration": 1,
+                                "duration_unit": "t",
+                                "symbol": "R_100"
+                            }
+                        }))
 
-                await ws.send(json.dumps({
-                    "buy": 1,
-                    "price": current_stake,
-                    "parameters": {
-                        "amount": current_stake,
-                        "basis": "stake",
-                        "contract_type": "DIGITOVER",
-                        "barrier": "3",
-                        "currency": "USD",
-                        "duration": 1,
-                        "duration_unit": "t",
-                        "symbol": "R_100"
-                    }
-                }))
+                        # Esperar resposta da compra
+                        while True:
+                            buy_msg = await queue.get()
+                            if "buy" in buy_msg:
+                                contract_id = buy_msg["buy"]["contract_id"]
+                                contract_active = True
+                                digits.clear()
+                                yield "✅ Ordem Enviada", f"Contrato #{contract_id} iniciado."
+                                break
 
-                buy_response = await queue.get()
-                if "buy" not in buy_response:
-                    yield "❌ Erro ao comprar", str(buy_response)
-                    threshold_reached = False
-                    digits.clear()
-                    continue
-
-                contract_id = buy_response["buy"]["contract_id"]
-                contract_active = True
-                threshold_reached = False
-                digits.clear()
-                yield "✅ Ordem Enviada", f"Contrato #{contract_id} iniciado."
-
+            # Processar resultado do contrato
             if contract_active and "contract" in msg:
-                c = msg["contract"]
-                if c.get("contract_id") == contract_id:
-                    status = c.get("status")
-                    profit = c.get("profit", 0)
+                contract = msg["contract"]
+                if contract.get("contract_id") == contract_id:
+                    status = contract.get("status")
+                    profit = contract.get("profit", 0)
                     total_profit += profit
 
                     if status == "won":
