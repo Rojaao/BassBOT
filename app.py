@@ -3,7 +3,7 @@ import asyncio
 from logic import start_bot
 
 st.set_page_config(page_title="Deriv Bot - Over 3", layout="wide")
-st.title("🤖 Deriv Bot - Estratégia Over 3 (Completo)")
+st.title("🤖 RoboDO RG 4ovr")
 
 token = st.text_input("🔑 Token da Deriv", type="password")
 stake = st.number_input("💵 Valor Inicial da Entrada", min_value=0.35, value=1.00, step=0.01)
