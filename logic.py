@@ -72,7 +72,7 @@ async def start_bot(token, stake, threshold, take_profit, stop_loss, multiplicad
                                 "amount": current_stake,
                                 "basis": "stake",
                                 "contract_type": "DIGITOVER",
-                                "barrier": "3",
+                                "barrier": "4",
                                 "currency": "USD",
                                 "duration": 1,
                                 "duration_unit": "t",
